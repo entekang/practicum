@@ -1,0 +1,205 @@
+---
+title: "Report liver clinical"
+author: "Ente Kang"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+# 3.1 Summary statistics of the major variables
+
+```{r, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(survival)
+library(reportRmd)
+liv <- read_csv("K:/Xuan_Li/Ente_Kang/liver_clinic.csv")  #keep barcode for merging only, not in model
+liv <- liv %>% select(-c(1))
+rm_covsum(liv, covs = c("gender", "age", "stage"), maincov = "OS")
+```
+We see that for individuals who were censored, there was a smaller proportion of females than in the un-censored case. 
+
+**Note: The above table and the analysis below were conducted using OS time, as there are more true survival outcomes (113). **
+
+```{r, echo=FALSE, message=FALSE}
+library(survminer)
+
+f <- survfit(Surv(OS.time, OS) ~ gender, data = liv)
+ggsurvplot(f, conf.int = T, pval = T, surv.median.line = "hv") +
+  labs(y = "Overall Survival Time", x = "Time")
+
+g <- survfit(Surv(OS.time, OS) ~ stage, data = liv)
+ggsurvplot(g, conf.int = T, pval = T, surv.median.line = "hv") +
+  labs(y = "Overall Survival Time", x = "Time")
+```
+
+Since there are 113 true survival outcomes, we should not entertain more than 11 variables. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+cn <- read_csv("K:/Xuan_Li/Ente_Kang/analysis plan/week 6/cn_genomic_pcs.csv")
+dm <- read_csv("K:/Xuan_Li/Ente_Kang/analysis plan/week 6/dm_genomic_pcs.csv")
+ge <- read_csv("K:/Xuan_Li/Ente_Kang/analysis plan/week 6/ge_genomic_pcs.csv")
+
+allpcs <- cn %>% inner_join(dm, by="barcode") %>% inner_join(ge, by="barcode")
+
+liv_final <- liv %>% inner_join(allpcs, by="barcode")
+
+liv_final <- liv_final %>% mutate(stage_recode = ifelse(stage == "Stage I" | stage == "Stage II", "Early Stage", 
+                                           "Not Early Stage"))
+
+h <- survfit(Surv(OS.time, OS) ~ stage_recode, data = liv_final)
+ggsurvplot(h, conf.int = T, pval = T, surv.median.line = "hv", legend.labs = c("Early Stage", "Not Early Stage")) +
+  labs(y = "Overall Survival Probability", x = "Time (Days)")
+
+
+```
+
+```{r, echo=FALSE}
+cox_small <- coxph(Surv(OS.time, OS) ~ age+gender+stage_recode, data = liv_final)
+small_sum <- summary(cox_small)
+sumdf <- data.frame(round(small_sum$coefficients, 3))
+colnames(sumdf)[5] <- "p-value"
+outTable(sumdf, caption = "Cox PH using vars. from clinical data only", row.names = "variables")
+```
+
+In the above model with age, gender and stage_recode, we see that stage_recode is highly significant. 
+Suggests that stage of disease may be key. 
+
+
+
+```{r, echo=FALSE}
+
+rm_covsum(liv_final, covs = c("pc1_cn", "pc2_cn", "pc3_cn", "pc4_cn", "pc5_cn", "pc6_cn", 
+                              "pc1_dm", "pc2_dm", "pc3_dm", "pc4_dm", "pc5_dm", "pc6_dm", 
+                              "pc1_ge", "pc2_ge", "pc3_ge", "pc4_ge", "pc5_ge", "pc6_ge"), 
+          maincov = "OS", caption = "Summary of first 6 pcs for 3 genomic datasets")
+```
+
+
+
+# Models
+
+## Cox model CN
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(survival)
+library(quantreg)
+coxcn <- coxph(Surv(OS.time, OS) ~ gender+age+stage_recode+
+                 pc1_cn+pc2_cn+pc3_cn+pc4_cn+pc5_cn+pc6_cn, data = liv_final)
+cnsum <- summary(coxcn)
+cnsum1 <- data.frame(round(cnsum$coefficients, 3))
+colnames(cnsum1)[5] <- "p-value"
+outTable(cnsum1, row.names = "variables", caption="Summary table for the CN cox model")
+```
+
+It appears that only stage_recode and pc1_cn were statistically significant.
+
+## Cox model GE
+
+```{r, echo=FALSE}
+coxge <- coxph(Surv(OS.time, OS) ~ gender+age+stage_recode+
+                 pc1_ge+pc2_ge+pc3_ge+pc4_ge+pc5_ge+pc6_ge, data = liv_final)
+gesum <- summary(coxge)
+gesum1 <- data.frame(round(gesum$coefficients, 3))
+colnames(gesum1)[5] <- "p-value"
+outTable(gesum1, row.names = "variables", caption="Summary table for the GE cox model")
+```
+
+In this univariate model ge cox ph, age, stage_recode were statistically significant.
+
+## Cox model DM
+
+```{r, echo=FALSE}
+coxdm <- coxph(Surv(OS.time, OS) ~ gender+age+stage_recode+
+                 pc1_dm+pc2_dm+pc3_dm+pc4_dm+pc5_dm+pc6_dm, data = liv_final)
+dmsum <- summary(coxdm)
+dmsum1 <- data.frame(round(dmsum$coefficients, 3))
+colnames(dmsum1)[5] <- "p-value"
+outTable(dmsum1, row.names = "variables", caption="Summary table for the DM cox model")
+```
+
+In the DM Cox PH model, only stage_recode was statistically significant. 
+
+**Findings: stage_recode was key in all 3 models. The pcs didn't play much of a role, except for pc1_cn. We saw previously that the first 6 pcs were only able to explain ~50% of the variation**
+
+## Cox model (full)
+
+```{r, echo=FALSE, message=FALSE}
+
+liv_final <- subset(liv_final, select = -c(barcode, stage, DSS, DSS.time, gender_n, agegroup, stagegroup))
+
+cox1 <- coxph(Surv(OS.time, OS) ~., data = liv_final)
+csum <- summary(cox1)
+csum1 <- data.frame(round(csum$coefficients, 3))
+colnames(csum1)[5] <- "p-value"
+outTable(csum1, row.names = "variables", caption="Summary table for the full cox model")
+```
+
+## stepwise selection
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(MASS)
+step <- stepAIC(cox1, direction = "both", trace = 0)
+stepsum <- round(data.frame(summary(step)$coefficients),3)
+colnames(stepsum)[5] <- "p-value"
+outTable(stepsum, row.names = "variables", caption = "Stepwise selection results")
+```
+
+**Why is it that pc5_dm was chosen, and not pc3_dm or pc4_dm? Similarly, what about pc1_ge, pc2_ge**  
+*It is to my understanding that the first few pcs are supposed to explain more variation*
+
+## backward elimination
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+stepb <- stepAIC(cox1, direction = "backward", trace = 0)
+bsum <- round(data.frame(summary(stepb)$coefficients),3)
+colnames(bsum)[5] <- "p-value"
+outTable(bsum, row.names='variables', caption='Backward elimination results')
+```
+
+
+### Cox PH assumption (reduced model)
+```{r, echo=FALSE}
+cox2 <- coxph(Surv(OS.time, OS) ~age+pc1_cn+pc1_dm+pc2_dm+pc5_dm+pc3_ge+pc4_ge+stage_recode, data = liv_final)
+pha <- cox.zph(cox2)
+d <- round(data.frame(pha$table),2)
+outTable(d, row.names = 'variables', caption = 'Cox Proportional Hazards Assumption')
+```
+
+We see that there are no issues with the cox proportional hazards assumption
+
+
+## Quantile Regression (only using clinical vars.) 
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(quantreg)
+crq_small <- crq(Surv(OS.time, OS) ~age+gender+stage_recode, taus = c(0.25, 0.5),data = liv_final, method = "PengHuang")
+
+tau_50s <- round(data.frame(summary(crq_small, tau=0.5)[[1]][2]), 3)
+tau_25s <- round(data.frame(summary(crq_small, tau=0.25)[[1]][2]), 3)
+colnames(tau_25s) <- c("Coefficient", "LB", "UB", "Se", "T stat", "p-value")
+colnames(tau_50s) <- c("Coefficient", "LB", "UB", "Se", "T stat", "p-value")
+
+outTable(tau_25s, row.names = "variables", caption="CQR (25th percentile), clinical vars.")
+outTable(tau_50s, row.names = "variables", caption="CQR (50th percentile), clinical vars.")
+
+```
+
+**The coefficients seem less "wild" if we don't include the pcs. However, some values are still quite strange.**
+
+
+## Quantile Regression (reduced, vars. from Cox)
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+crqmod <- crq(Surv(OS.time, OS) ~age+pc1_cn+pc1_dm+pc2_dm+pc5_dm+pc3_ge+pc4_ge+stage_recode, taus = c(0.25, 0.5),data = liv_final, method = "PengHuang")
+
+tau_50 <- round(data.frame(summary(crqmod, tau=0.5)[[1]][2]), 3)
+tau_25 <- round(data.frame(summary(crqmod, tau=0.25)[[1]][2]), 3)
+colnames(tau_25) <- c("Coefficient", "LB", "UB", "Se", "T stat", "p-value")
+colnames(tau_50) <- c("Coefficient", "LB", "UB", "Se", "T stat", "p-value")
+
+outTable(tau_25, row.names = "variables", caption="Reduced CQR (25th percentile)")
+outTable(tau_50, row.names = "variables", caption="Reduced CQR (50th percentile)")
+
+```
+
+**At the 25%-tile, only stage_recode and pc1_cn were statistically significant.**  
+
+**At the 50%-tile, stage_recode and pc2_dm were significant. Why is pc2_dm significant but pc1_dm not? Isn't pc1_dm supposed to explain "more variation" in a sense?**
+
+Do we need to consider rescaling age? The magnitude for age is much greater than that of the pcs. The coefs seem very large for CQR, but were okay for Coxph.  
+Furthermore what are the units for survival time, is it days?

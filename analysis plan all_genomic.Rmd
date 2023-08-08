@@ -1,0 +1,174 @@
+---
+title: "Analysis Plan - all genomic"
+author: "Ente Kang"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(reportRmd)
+
+```
+
+
+# 1. Study aims and description
+
+Our objective is to compare and look at different models for time-to-event outcomes.  
+This genomic dataset will be merged with the DM, GE and clinical data. We will be using models such as Cox PH, CQR and also variable selection methods to reduce the dimension.
+
+# 2. Definition of study endpoints and major variables 
+## 2.1 Study endpoint
+
+In this analysis, our focus will be on the Overall Survival Time (OS).
+Each genomic dataset had 334 observations, with 14926 variables. The dm_liver dataset had the last observation with some missing predictors, and will be dropped. Cn_liver and ge_liver had no missing values. 
+
+## 2.2 Major variables
+
+As a starting point, due to no clinical knowledge of the given variables, principal components were run. This helps us choose some variables that are able to explain a good amount of the variation in our data. We see from the screeplot that 6 dimensions should be sufficient, as we are looking for the "L shape".  
+The first 6 principal components will then be merged with PCs from the DM and GE data. Finally they will be combined with our clinical data, which contains information on age, gender and stage of disease.
+
+
+# 3. Analysis Steps 
+
+## 3.1 Summary statistics of major variables
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(factoextra)
+d <- read_csv("K:/Xuan_Li/Ente_Kang/CN_liver_t.csv")
+colnames(d)[1] <- "barcode"
+p <- prcomp(d[, -c(1)], scale. = T)
+fviz_eig(p, main = "Screeplot for CN liver")
+```
+
+```{r, echo=FALSE, message=FALSE}
+
+#### 
+vars <- get_pca_var(p)
+eigen <- tibble(round(head(get_eigenvalue(p), 6), 2))
+var_percent <- eigen[, -1]
+pcs <- paste0("pc", c(1:6))
+var_percent <- cbind(pcs, var_percent)
+
+outTable(var_percent, caption = "Variation explained by first 6 PC - CN", keep.rownames = F)
+
+ge <- read_csv("K:/Xuan_Li/Ente_Kang/GE_liver_t.csv")
+colnames(ge)[1] <- "barcode"
+dm <- read_csv("K:/Xuan_Li/Ente_Kang/DM_liver_t.csv")
+dm <- dm %>% drop_na()                                 # dm has one missing value (last observation)
+colnames(dm)[1] <- "barcode"
+```
+
+```{r, echo=FALSE}
+p_ge <- prcomp(ge[, -c(1)], scale. = T)
+fviz_eig(p_ge, main = "Screeplot for GE liver")
+varsge <- get_pca_var(p_ge)
+eigenge <- tibble(round(head(get_eigenvalue(p_ge), 6), 2))
+var_percentge <- eigenge[, -1]
+pcsge <- paste0("pc", c(1:6))
+var_percentge <- cbind(pcsge, var_percentge)
+outTable(var_percentge, caption = "Variation explained by first 6 PC - GE", keep.rownames = F)
+```
+
+```{r, echo=FALSE}
+# ind <- get_pca_ind(p) # individual contribution to PC
+
+#### merge indiv contributions with clinical data ####
+
+# out <- data.frame(ind$contrib[,1:6])
+# colnames(out) <- c("pc1_cn", "pc2_cn", "pc3_cn", "pc4_cn", "pc5_cn", "pc6_cn")
+# outf <- cbind(d$barcode, out)
+# colnames(outf)[1] <- "barcode"
+
+# write_csv(outf, "cn_genomic_pcs.csv")
+#######################
+
+
+##### variable contributions ####
+# head(vars$contrib, 4)  --> need to figure out which have the highest contribs.
+
+# rownames(vars$contrib)[1:4]
+
+# loadings : p$rotation
+# pc1_top10 <- sort(p$rotation[,1], decreasing = T)[1:10]
+# pc2_top10 <- sort(p$rotation[,2], decreasing = T)[1:10]
+# pc3_top10 <- sort(p$rotation[,3], decreasing = T)[1:10]
+# pc4_top10 <- sort(p$rotation[,4], decreasing = T)[1:10]
+# pc5_top10 <- sort(p$rotation[,5], decreasing = T)[1:10]
+# pc6_top10 <- sort(p$rotation[,6], decreasing = T)[1:10]
+
+# outTable(round(pc1_top10, 6), row.names = "variables", caption = "loadings for pc1")
+# outTable(round(pc2_top10, 6), row.names = "variables", caption = "loadings for pc2")
+# outTable(round(pc3_top10, 6), row.names = "variables", caption = "loadings for pc3")
+# outTable(round(pc4_top10, 6), row.names = "variables", caption = "loadings for pc4")
+# outTable(round(pc5_top10, 6), row.names = "variables", caption = "loadings for pc5")
+# outTable(round(pc6_top10, 6), row.names = "variables", caption = "loadings for pc6")
+
+```
+
+
+```{r, echo=FALSE}
+p_dm <- prcomp(dm[, -c(1)], scale. = T)
+fviz_eig(p_dm, main = "Screeplot for CN liver")
+```
+
+```{r, echo=FALSE}
+varsdm <- get_pca_var(p_dm)
+eigendm <- tibble(round(head(get_eigenvalue(p_dm), 6), 2))
+var_percentdm <- eigendm[, -1]
+pcsdm <- paste0("pc", c(1:6))
+var_percentdm <- cbind(pcsdm, var_percentdm)
+outTable(var_percentdm, caption = "Variation explained by first 6 PC - DM", keep.rownames = F)
+```
+
+
+
+Principal Components were run on the dataset to determine what combinations of variables explained the variation in our data. The rationale for this move is that there are a total of 14926 variables. 
+
+```{r, echo=FALSE}
+# rm_covsum(d, covs = c("ZNF254", "MREG", "LXN", "AMIGO3", "ACP1", "ARL6IP6", "RAB3D", 'APC', 'RNF123', 
+#                       'MAP6D1', 'B3GALT4', 'C22orf15', 'MFSD10', 'ECE1', 'HMGA1', 'RAPGEF1', 'MNT',
+#                       'RAI1', 'FXYD7', 'LIMK1', 'TMEM173', 'LPXN', 'GIMAP6', 'ISCU', 'CLEC14A', 'GIMAP1',
+#                       'SLA2', 'DLX5', 'CCR7', 'SPN'))
+
+
+```
+
+
+# Regularized Cox Regression (using CN genomic)
+```{r, echo=F, warning=FALSE, message=FALSE}
+library(glmnet)
+library(survival)
+clin <- read_csv("K:/Xuan_Li/Ente_Kang/liver_clinic.csv")
+clin <- clin %>% select(c(barcode, OS, OS.time))
+clin_cn <- clin %>% inner_join(d, by="barcode")
+m <- as.matrix(clin_cn)
+class(m) <- "numeric"
+cv.fit <- cv.glmnet(m[, -c(1:3)], Surv(m[,3], m[,2]), 
+                    family = "cox", maxit=1000)
+fit <- glmnet(m[, -c(1:3)], Surv(m[,3], m[,2]), 
+                    family = "cox", maxit=1000)
+plot(cv.fit)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+coefs <- coef(fit, s = cv.fit$lambda.min)
+index <- which(coefs != 0)  # the covariates that dont have coef =0
+index_coef <- coefs[index]   # what are the coefficient values
+
+#index
+#index_coef
+cols <- colnames(clin_cn)[index]
+
+cox <- coxph(Surv(OS.time, OS) ~ ASAP1+ASXL3+ATP6V1A+CDCA5+CMIP+DIAPH2+DUSP23+ETNK2+
+               GAS2+GOLIM4+IFT122+IL18RAP+ILDR2+MAML2+MGAT5B+MMP10+MRPS26+
+               NR1D1+OPTN+PARP1+RAB14+RARRES1+RNLS+SPRED2+SPTBN5+ZNF717, data = clin_cn)
+summ <- summary(cox)
+csum1 <- data.frame(round(summ$coefficients, 2))
+outTable(csum1, row.names = "variables", caption="Summary table for Regularized Cox")
+
+```
+
+We see from regularization, most of the variables were in fact not significant at the 0.05 level.  
+Only OPTN and PARP1 were significant.  Additionally, the coefficient for OPTN is a little strange.  
+*Note: Regularized Cox was done using the CN_liver dataset, and not all 3 merged*

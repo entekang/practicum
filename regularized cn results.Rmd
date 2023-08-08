@@ -1,0 +1,471 @@
+---
+title: "regularized cn final"
+output: word_document
+date: "2023-03-12"
+---
+
+```{r}
+library(tidyverse)
+library(survival)
+library(quantreg)
+library(reportRmd)
+library(survminer)
+
+cn <- read_csv("C:/Users/kange/Desktop/Thesis/data/CN_liver_t.csv")
+cn <- cn[c(1:333), ] # drop last 
+colnames(cn)[1] <- "barcode"
+liv <- read_csv("C:/Users/kange/Desktop/Thesis/data/liver_clinic.csv")
+
+liv_final <- liv %>% inner_join(cn, by = "barcode") %>% 
+  mutate(stage_recode = ifelse(stage == "Stage I" | stage == "Stage II", "Early Stage",  "Not Early Stage"))
+
+# cox model 
+cox <- coxph(Surv(OS.time,OS)~age+stage_recode+ATAD2B+ATP6V1C1+CDCA8+CMPK2+DIDO1+DUSP28+ETV1+GAS5+ILK+MAMSTR+MGMT+MMP14+NR1H3+OR2A7+
+               PARP12+RAB18+RARS+RNPC3+SPRY2+SPTLC3+ZNF721, data = liv_final)
+summary(cox)
+# has concordance of 0.8, se=0.0212
+
+coxsum <- round(data.frame(summary(cox)$coefficients), 3)
+outTable(coxsum, row.names = "Variables")
+```
+
+
+We see that there is much noise to this model, not many things signif, some preds still ahve very high HR
+
+```{r}
+cox.zph(cox)
+plot(cox.zph(cox))[23]
+```
+
+cox pha satisfied.
+
+```{r}
+f <- survfit(Surv(OS.time, OS) ~ 1, data = liv_final)
+ggsurvplot(f, conf.int = T, pval = T, surv.median.line = "hv")
+```
+
+use 0.1 and 0.25 for CQR
+
+
+
+# CQR 0.25
+```{r}
+cqr<- crq(Surv(OS.time,OS)~age+stage_recode+ATAD2B+ATP6V1C1+CDCA8+CMPK2+DIDO1+DUSP28+ETV1+GAS5+ILK+MAMSTR+MGMT+MMP14+NR1H3+OR2A7+
+               PARP12+RAB18+RARS+RNPC3+SPRY2+SPTLC3+ZNF721, data = liv_final, method = "PengHuang")
+csum25 <- summary(cqr, taus = 0.25)
+csum25 <- data.frame(round(csum25[[2]]$coefficients, 3))
+outTable(csum25, caption = "CQR 0.25 - CN Reg. ", row.names = "variables")
+```
+
+# CQR 0.1
+```{r}
+csum1 <- summary(cqr, taus = 0.1)
+csum1 <- data.frame(round(csum1[[2]]$coefficients, 3))
+outTable(csum1, caption = "CQR 0.1 - CN Reg. ", row.names = "variables")
+```
+
+We see that the scale of variable effects are more on par with each other in CQR than cox, speaks to heterogeneity
+
+
+# OSD
+```{r}
+library(survBootOutliers)
+# note the covariate data is based on the model parameters chosen
+osd <- survBootOutliers((Surv(liv_final$OS.time, liv_final$OS)), covariate.data = liv_final %>% 
+                          select(c(age,stage_recode,ATAD2B,ATP6V1C1,CDCA8,CMPK2,DIDO1,DUSP28,ETV1,GAS5,ILK,MAMSTR,MGMT,MMP14,
+                                   NR1H3,OR2A7,
+               PARP12,RAB18,RARS,RNPC3,SPRY2,SPTLC3,ZNF721)),
+                        sod.method = "osd",
+          max.outliers = 13)  # using about 5% as max # of outliers
+liv_final_osd <- liv_final[-osd$removed_indexes, ] # removed 13 obs.
+```
+
+# DEV
+```{r}
+dev <- residuals(cox, type = "deviance")
+ind <- as.numeric(names(sort(abs(dev), decreasing = T))[1:13])
+liv_final_dev <- liv_final[-ind,]
+```
+
+
+# cross validation
+
+```{r}
+
+
+cv_conc <- rep(0, 100)
+for (j in 1:100){
+splits <- split(liv_final, sample(1:10, nrow(liv_final), replace = T))
+
+c <- rep(0, 10)
+for (i in 1:10){
+  d_minusi <- bind_rows(splits[-c(i)])  # dataset without ith fold
+  fit <- coxph(Surv(OS.time,OS)~age+stage_recode+ATAD2B+ATP6V1C1+CDCA8+CMPK2+DIDO1+DUSP28+ETV1+GAS5+ILK+MAMSTR+MGMT+MMP14+NR1H3+OR2A7+
+                 PARP12+RAB18+RARS+RNPC3+SPRY2+SPTLC3+ZNF721, data = d_minusi) # fit the "training model"
+  
+  # predict new data's HR/risk using training model
+  preds <- predict(fit, newdata = splits[[i]], type = "risk")
+  
+  # bind preds to testing data
+  test <- splits[[i]][, all.vars(fit$call[[2]])]
+  test_preds <- cbind(test, preds)
+  
+  # useful info
+  surv_time <- test$OS.time
+  censor_status <- test$OS
+  risk <- test_preds$preds
+  
+  # call concordance
+  
+  pairs <- data.frame(t(combn(c(1:nrow(test)), 2)))
+  colnames(pairs) <- c("obs1", "obs2")
+  
+  obs1 <- pairs$obs1
+  obs2 <- pairs$obs2
+  time1 <- surv_time[obs1]
+  time2 <- surv_time[obs2]
+  status1 <- censor_status[obs1]
+  status2 <- censor_status[obs2]
+  risk1 <- risk[obs1]
+  risk2 <- risk[obs2]
+  good_df <- data.frame(cbind(obs1, obs2, time1, time2, status1, status2, risk1, risk2))
+  # good_df contains pairs that can be compared
+  good_df <- good_df %>% filter(!(status1==0 & status2==0)) %>%  # not both censored
+    filter(!(time1<=time2 & status1==0 & status2==1)) %>%   # time1<time2, time1 censored, time2 not 
+    filter(!(time1>=time2 & status2==0 & status1==1)) %>%  # time2<time1, time2 censored, time1not
+    rowid_to_column()
+  
+  # tied predictors - just see if any duplications in dataframe, all.vars are the variables in the model
+  # duplicated(liv_final[, all.vars(fit$call[[2]])[-c(1:2)]])
+  
+  # tied observed event times (a_y)
+  #tied_obs_ind <- good_df %>% filter(time1==time2) %>% select(rowid)
+  #ay <- nrow(tied_obs)
+  # tied predictor and event time
+  
+  # conc vs discordant
+  conc_disc <- good_df %>% 
+    filter(!(time1==time2)) %>% 
+    mutate(conc = case_when(
+      (time1 < time2 & risk1 > risk2) ~ 1,
+      (time2 < time1 & risk2 > risk1) ~ 1,
+      TRUE ~ 0
+    ))
+  concordance <- mean(conc_disc$conc)
+  c[i] <- concordance
+}
+cv_conc[j] <- mean(c)
+
+}
+mean(cv_conc)
+```
+
+
+
+# cross validation CQR 0.1
+```{r}
+
+
+cv_conc <- rep(0, 100)
+for (j in 1:100){
+splits <- split(liv_final, sample(1:10, nrow(liv_final), replace = T))
+
+c <- rep(0, 10)
+for (i in 1:10){
+  d_minusi <- bind_rows(splits[-c(i)])  # dataset without ith fold
+  fit <- crq(Surv(OS.time,OS)~age+stage_recode+ATAD2B+ATP6V1C1+CDCA8+CMPK2+DIDO1+DUSP28+ETV1+GAS5+ILK+MAMSTR+MGMT+MMP14+NR1H3+OR2A7+
+               PARP12+RAB18+RARS+RNPC3+SPRY2+SPTLC3+ZNF721, data = d_minusi, method = "PengHuang") # fit the "training model"
+  
+  # predict new data's HR/risk using training model
+      q1coef <- coef(fit, taus = c(0.1))
+      #model matrix for data to be predicted, splits[[i]]
+      somedf <- splits[[i]][, all.vars(fit$call[[2]])[-c(1:2)]] %>% 
+        mutate(stage_recode=ifelse(stage_recode=="Not Early Stage", 1, 0))
+      colnames(somedf)[2] <- "stage_recodeNot Early Stage"
+      int <- rep(1, nrow(splits[[i]]))
+      modelmatrix <- cbind(int, somedf)
+      preds1 <- data.frame(preds=as.matrix(modelmatrix) %*% q1coef)
+  
+  # bind preds to testing data
+  test <- splits[[i]][, all.vars(fit$call[[2]])]
+  test_preds <- cbind(test, preds1)
+  
+  # useful info
+  surv_time <- test$OS.time
+  censor_status <- test$OS
+  risk <- test_preds$preds
+  
+  # call concordance
+  
+  pairs <- data.frame(t(combn(c(1:nrow(test)), 2)))
+  colnames(pairs) <- c("obs1", "obs2")
+  
+  obs1 <- pairs$obs1
+  obs2 <- pairs$obs2
+  time1 <- surv_time[obs1]
+  time2 <- surv_time[obs2]
+  status1 <- censor_status[obs1]
+  status2 <- censor_status[obs2]
+  risk1 <- risk[obs1]  # predicted survival time
+  risk2 <- risk[obs2]
+  good_df <- data.frame(cbind(obs1, obs2, time1, time2, status1, status2, risk1, risk2))
+  # good_df contains pairs that can be compared
+  good_df <- good_df %>% filter(!(status1==0 & status2==0)) %>%  # not both censored
+    filter(!(time1<=time2 & status1==0 & status2==1)) %>%   # time1<time2, time1 censored, time2 not 
+    filter(!(time1>=time2 & status2==0 & status1==1)) %>%  # time2<time1, time2 censored, time1not
+    rowid_to_column()
+  
+  # tied predictors - just see if any duplications in dataframe, all.vars are the variables in the model
+  # duplicated(liv_final[, all.vars(fit$call[[2]])[-c(1:2)]])
+  
+  # tied observed event times (a_y)
+  #tied_obs_ind <- good_df %>% filter(time1==time2) %>% select(rowid)
+  #ay <- nrow(tied_obs)
+  # tied predictor and event time
+  
+  # conc vs discordant
+  conc_disc <- good_df %>% 
+    filter(!(time1==time2)) %>% 
+    mutate(conc = case_when(
+      (time1 < time2 & risk1 < risk2) ~ 1,  # need to reverse direction of "risk" now, which means predicted surv time
+      (time2 < time1 & risk2 < risk1) ~ 1,
+      TRUE ~ 0
+    ))
+  concordance <- mean(conc_disc$conc)
+  c[i] <- concordance
+}
+cv_conc[j] <- mean(c)
+
+}
+mean(cv_conc)
+```
+
+# CV CQR 0.25
+```{r}
+
+cv_conc <- rep(0, 100)
+for (j in 1:100){
+splits <- split(liv_final, sample(1:10, nrow(liv_final), replace = T))
+
+c <- rep(0, 10)
+for (i in 1:10){
+  d_minusi <- bind_rows(splits[-c(i)])  # dataset without ith fold
+  fit <- crq(Surv(OS.time,OS)~age+stage_recode+ATAD2B+ATP6V1C1+CDCA8+CMPK2+DIDO1+DUSP28+ETV1+GAS5+ILK+MAMSTR+MGMT+MMP14+NR1H3+OR2A7+
+               PARP12+RAB18+RARS+RNPC3+SPRY2+SPTLC3+ZNF721, data = d_minusi, method = "PengHuang") # fit the "training model"
+  
+  # predict new data's HR/risk using training model
+      q1coef <- coef(fit, taus = c(0.25))
+      #model matrix for data to be predicted, splits[[i]]
+      somedf <- splits[[i]][, all.vars(fit$call[[2]])[-c(1:2)]] %>% 
+        mutate(stage_recode=ifelse(stage_recode=="Not Early Stage", 1, 0))
+      colnames(somedf)[2] <- "stage_recodeNot Early Stage"
+      int <- rep(1, nrow(splits[[i]]))
+      modelmatrix <- cbind(int, somedf)
+      preds1 <- data.frame(preds=as.matrix(modelmatrix) %*% q1coef)
+  
+  # bind preds to testing data
+  test <- splits[[i]][, all.vars(fit$call[[2]])]
+  test_preds <- cbind(test, preds1)
+  
+  # useful info
+  surv_time <- test$OS.time
+  censor_status <- test$OS
+  risk <- test_preds$preds
+  
+  # call concordance
+  
+  pairs <- data.frame(t(combn(c(1:nrow(test)), 2)))
+  colnames(pairs) <- c("obs1", "obs2")
+  
+  obs1 <- pairs$obs1
+  obs2 <- pairs$obs2
+  time1 <- surv_time[obs1]
+  time2 <- surv_time[obs2]
+  status1 <- censor_status[obs1]
+  status2 <- censor_status[obs2]
+  risk1 <- risk[obs1]  # predicted survival time
+  risk2 <- risk[obs2]
+  good_df <- data.frame(cbind(obs1, obs2, time1, time2, status1, status2, risk1, risk2))
+  # good_df contains pairs that can be compared
+  good_df <- good_df %>% filter(!(status1==0 & status2==0)) %>%  # not both censored
+    filter(!(time1<=time2 & status1==0 & status2==1)) %>%   # time1<time2, time1 censored, time2 not 
+    filter(!(time1>=time2 & status2==0 & status1==1)) %>%  # time2<time1, time2 censored, time1not
+    rowid_to_column()
+  
+  # tied predictors - just see if any duplications in dataframe, all.vars are the variables in the model
+  # duplicated(liv_final[, all.vars(fit$call[[2]])[-c(1:2)]])
+  
+  # tied observed event times (a_y)
+  #tied_obs_ind <- good_df %>% filter(time1==time2) %>% select(rowid)
+  #ay <- nrow(tied_obs)
+  # tied predictor and event time
+  
+  # conc vs discordant
+  conc_disc <- good_df %>% 
+    filter(!(time1==time2)) %>% 
+    mutate(conc = case_when(
+      (time1 < time2 & risk1 < risk2) ~ 1,  # need to reverse direction of "risk" now, which means predicted surv time
+      (time2 < time1 & risk2 < risk1) ~ 1,
+      TRUE ~ 0
+    ))
+  concordance <- mean(conc_disc$conc)
+  c[i] <- concordance
+}
+cv_conc[j] <- mean(c)
+
+}
+mean(cv_conc)
+
+```
+
+# cox robust
+```{r}
+repcrossval <- function(repeats, folds, weight){
+  cv_conc <- rep(0, repeats)
+  for (k in 1:repeats){
+    splits <- split(liv_final, sample(1:folds, nrow(liv_final), replace = T))  
+    
+    c <- rep(0, folds)
+    for (i in 1:folds){
+      d_minusi <- bind_rows(splits[-c(i)])  # dataset without ith fold 
+      fit <- coxr(Surv(OS.time,OS)~age+stage_recode+ATAD2B+ATP6V1C1+CDCA8+CMPK2+DIDO1+DUSP28+ETV1+GAS5+ILK+MAMSTR+MGMT+MMP14+NR1H3+
+                    OR2A7+ PARP12+RAB18+RARS+RNPC3+SPRY2+SPTLC3+ZNF721, 
+                  data = d_minusi, f.weight = weight) # fit the "training model" 
+      
+      # predict new data's HR/risk using training model
+      somedf <- splits[[i]] %>% mutate(stage_recodeNotEarly=ifelse(stage_recode=="Not Early Stage", 1, 0))
+      somedf <- somedf %>% select(c(age,stage_recodeNotEarly,ATAD2B,ATP6V1C1,CDCA8,CMPK2,DIDO1,DUSP28,ETV1,GAS5,ILK,MAMSTR,MGMT,
+                                    MMP14,NR1H3,OR2A7,
+               PARP12,RAB18,RARS,RNPC3,SPRY2,SPTLC3,ZNF721))
+      preds <- data.frame(preds = exp(as.matrix(somedf) %*% fit$coefficients))
+      
+      # bind preds to testing data
+      test <- splits[[i]]
+      test_preds <- cbind(test, preds)
+      
+      # useful info
+      surv_time <- test$OS.time
+      censor_status <- test$OS
+      risk <- test_preds$preds
+      
+      # call concordance
+      
+      
+      pairs <- data.frame(t(combn(c(1:nrow(test)), 2)))
+      colnames(pairs) <- c("obs1", "obs2")
+      
+      obs1 <- pairs$obs1
+      obs2 <- pairs$obs2
+      time1 <- surv_time[obs1]
+      time2 <- surv_time[obs2]
+      status1 <- censor_status[obs1]
+      status2 <- censor_status[obs2]
+      risk1 <- risk[obs1]
+      risk2 <- risk[obs2]
+      good_df <- data.frame(cbind(obs1, obs2, time1, time2, status1, status2, risk1, risk2))
+      # good_df contains pairs that can be compared
+      good_df <- good_df %>% filter(!(status1==0 & status2==0)) %>%  # not both censored
+        filter(!(time1<=time2 & status1==0 & status2==1)) %>%   # time1<time2, time1 censored, time2 not 
+        filter(!(time1>=time2 & status2==0 & status1==1)) %>%  # time2<time1, time2 censored, time1not
+        rowid_to_column()
+      
+      # tied predictors - just see if any duplications in dataframe, all.vars are the variables in the model
+      # duplicated(liv_final[, all.vars(fit$call[[2]])[-c(1:2)]])
+      
+      # tied observed event times (a_y)
+      #tied_obs_ind <- good_df %>% filter(time1==time2) %>% select(rowid)
+      #ay <- nrow(tied_obs)
+      # tied predictor and event time
+      
+      # conc vs discordant
+      conc_disc <- good_df %>% 
+        filter(!(time1==time2)) %>% 
+        mutate(conc = case_when(
+          (time1 < time2 & risk1 > risk2) ~ 1,
+          (time2 < time1 & risk2 > risk1) ~ 1,
+          TRUE ~ 0
+        ))
+      concordance <- mean(conc_disc$conc)
+      c[i] <- concordance
+      
+    }
+    cross_val_score <- mean(c)
+    cv_conc[k] <- cross_val_score
+  }
+  mean(cv_conc)
+}
+library(coxrobust)
+repcrossval(100, 10, "quadratic")
+```
+
+# aft 
+```{r}
+library(rms)
+cv_conc <- rep(0, 100)
+for (j in 1:100){
+splits <- split(liv_final, sample(1:10, nrow(liv_final), replace = T))
+
+c <- rep(0, 10)
+for (i in 1:10){
+  d_minusi <- bind_rows(splits[-c(i)])  # dataset without ith fold
+  fit <- psm(Surv(OS.time,OS)~age+stage_recode+ATAD2B+ATP6V1C1+CDCA8+CMPK2+DIDO1+DUSP28+ETV1+GAS5+ILK+MAMSTR+MGMT+MMP14+NR1H3+OR2A7+
+                 PARP12+RAB18+RARS+RNPC3+SPRY2+SPTLC3+ZNF721,
+			   data=d_minusi, dist='weibull', y= TRUE, x=TRUE) # fit the "training model"
+  
+  # predict new data's HR/risk using training model
+  preds <- preds <- predict(fit, newdata = data.frame(splits[[i]]), type ="lp")
+  
+  # bind preds to testing data
+  test <- splits[[i]][, all.vars(fit$call[[2]])]
+  test_preds <- cbind(test, preds)
+  
+  # useful info
+  surv_time <- test$OS.time
+  censor_status <- test$OS
+  risk <- test_preds$preds
+  
+  # call concordance
+  
+  pairs <- data.frame(t(combn(c(1:nrow(test)), 2)))
+  colnames(pairs) <- c("obs1", "obs2")
+  
+  obs1 <- pairs$obs1
+  obs2 <- pairs$obs2
+  time1 <- surv_time[obs1]
+  time2 <- surv_time[obs2]
+  status1 <- censor_status[obs1]
+  status2 <- censor_status[obs2]
+  risk1 <- risk[obs1]  # refers to predicted survival time here
+  risk2 <- risk[obs2]
+  good_df <- data.frame(cbind(obs1, obs2, time1, time2, status1, status2, risk1, risk2))
+  # good_df contains pairs that can be compared
+  good_df <- good_df %>% filter(!(status1==0 & status2==0)) %>%  # not both censored
+    filter(!(time1<=time2 & status1==0 & status2==1)) %>%   # time1<time2, time1 censored, time2 not 
+    filter(!(time1>=time2 & status2==0 & status1==1)) %>%  # time2<time1, time2 censored, time1not
+    rowid_to_column()
+  
+  # tied predictors - just see if any duplications in dataframe, all.vars are the variables in the model
+  # duplicated(liv_final[, all.vars(fit$call[[2]])[-c(1:2)]])
+  
+  # tied observed event times (a_y)
+  #tied_obs_ind <- good_df %>% filter(time1==time2) %>% select(rowid)
+  #ay <- nrow(tied_obs)
+  # tied predictor and event time
+  
+  # conc vs discordant
+  conc_disc <- good_df %>% 
+    filter(!(time1==time2)) %>% 
+    mutate(conc = case_when(
+      (time1 < time2 & risk1 < risk2) ~ 1,
+      (time2 < time1 & risk2 < risk1) ~ 1,
+      TRUE ~ 0
+    ))
+  concordance <- mean(conc_disc$conc)
+  c[i] <- concordance
+}
+cv_conc[j] <- mean(c)
+
+}
+mean(cv_conc)
+```
+
